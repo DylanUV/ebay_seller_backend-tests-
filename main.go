@@ -159,9 +159,17 @@ func main() {
 
 	client := NewClient(os.Getenv("EBAY_CLIENT_ID"), os.Getenv("EBAY_CLIENT_SECRET"))
 
+	// CORS_ORIGINS: lista separada por comas (ej. "http://localhost:8080,https://mi-app.dev").
+	// Si no se define, cae a localhost para que Flutter web funcione en pruebas locales.
+	origins := os.Getenv("CORS_ORIGINS")
+	allowOrigins := strings.Split(origins, ",")
+	if origins == "" {
+		allowOrigins = []string{"http://localhost:8080", "http://localhost:5000"}
+	}
+
 	router := gin.Default()
 	router.Use(cors.New(cors.Config{
-		AllowOrigins: []string{"https://ebay.kaerdos.dev"},
+		AllowOrigins: allowOrigins,
 	}))
 
 	router.GET("/listings", ListingHandler(client))
@@ -178,5 +186,9 @@ func main() {
 		})
 	})
 
-	router.Run("0.0.0.0:" + os.Getenv("PORT"))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // valor por defecto para correrlo local sin .env
+	}
+	router.Run("0.0.0.0:" + port)
 }

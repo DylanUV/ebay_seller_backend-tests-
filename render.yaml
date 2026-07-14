@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ebay-seller-backend-dev
+    runtime: go
+    plan: free
+    buildCommand: go build -o app .
+    startCommand: ./app
+    envVars:
+      - key: EBAY_CLIENT_ID
+        sync: false # lo cargas tú manualmente en el dashboard de Render
+      - key: EBAY_CLIENT_SECRET
+        sync: false
+      - key: DEFAULT_SELLER_USERNAME
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
