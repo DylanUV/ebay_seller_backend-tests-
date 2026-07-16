@@ -86,6 +86,121 @@ func (c *Client) getToken() (string, error) {
 	return c.accessToken, nil
 }
 
+// --- Caché de imágenes en memoria ---
+// Guarda los bytes de la imagen y su content-type por un tiempo corto,
+// así no le pedimos lo mismo a eBay en cada carga de cada usuario.
+// Ojo: esto vive en RAM del servidor, se pierde si el servicio se reinicia
+// (no reemplaza el caché en disco del celular, que ya lo hace CachedNetworkImage).
+
+type cachedImage struct {
+	data        []byte
+	contentType string
+	expiresAt   time.Time
+}
+
+type imageCache struct {
+	mu    sync.Mutex
+	items map[string]cachedImage
+	ttl   time.Duration
+}
+
+func newImageCache(ttl time.Duration) *imageCache {
+	return &imageCache{
+		items: make(map[string]cachedImage),
+		ttl:   ttl,
+	}
+}
+
+func (c *imageCache) get(key string) (cachedImage, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, ok := c.items[key]
+	if !ok || time.Now().After(item.expiresAt) {
+		return cachedImage{}, false
+	}
+	return item, true
+}
+
+func (c *imageCache) set(key string, data []byte, contentType string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.items[key] = cachedImage{
+		data:        data,
+		contentType: contentType,
+		expiresAt:   time.Now().Add(c.ttl),
+	}
+}
+
+// allowedImageHost evita que el proxy se use para descargar cualquier URL
+// (eso sería un "open proxy"). Solo dejamos pasar dominios de imágenes de eBay.
+func allowedImageHost(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Host)
+	return strings.HasSuffix(host, "ebayimg.com")
+}
+
+// ImageProxyHandler descarga la imagen de eBay del lado del servidor y la
+// reenvía al cliente. Así, para el navegador, la imagen "viene" de nuestro
+// propio dominio y no del dominio de eBay directamente.
+func ImageProxyHandler(client *http.Client, cache *imageCache) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		imgURL := ctx.Query("url")
+		if imgURL == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "falta el parámetro 'url'"})
+			return
+		}
+		if !allowedImageHost(imgURL) {
+			ctx.JSON(http.StatusForbidden, gin.H{"error": "host de imagen no permitido"})
+			return
+		}
+
+		if item, ok := cache.get(imgURL); ok {
+			ctx.Header("Cache-Control", "public, max-age=900")
+			ctx.Data(http.StatusOK, item.contentType, item.data)
+			return
+		}
+
+		req, err := http.NewRequest(http.MethodGet, imgURL, nil)
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			ctx.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			ctx.JSON(resp.StatusCode, gin.H{"error": "eBay respondió con error al pedir la imagen"})
+			return
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "image/jpeg"
+		}
+
+		cache.set(imgURL, body, contentType)
+
+		ctx.Header("Cache-Control", "public, max-age=900")
+		ctx.Data(http.StatusOK, contentType, body)
+	}
+}
+
 const browseSearchURL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
 func (c *Client) SearchBySeller(seller, sort string, limit, offset int) ([]byte, error) {
@@ -173,6 +288,11 @@ func main() {
 	}))
 
 	router.GET("/listings", ListingHandler(client))
+
+	// Caché de imágenes en RAM por 15 minutos.
+	imgCache := newImageCache(15 * time.Minute)
+	imgHTTPClient := &http.Client{Timeout: 10 * time.Second}
+	router.GET("/image-proxy", ImageProxyHandler(imgHTTPClient, imgCache))
 
 	router.GET("/healtz", func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, gin.H{
