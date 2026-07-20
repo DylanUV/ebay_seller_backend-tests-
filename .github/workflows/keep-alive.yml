@@ -11,8 +11,8 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping /healtz
+      - name: Ping /healthz
         run: |
-          curl -sf https://ebay-seller-backend-tests.onrender.com/healtz \
+          curl -sf https://ebay-seller-backend-tests.onrender.com/healthz \
             && echo "Backend despierto ✅" \
             || echo "El ping falló ❌ (revisa el estado del servicio en Render)"
