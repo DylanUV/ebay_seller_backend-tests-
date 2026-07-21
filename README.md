@@ -3,5 +3,5 @@
 ## Endpoints
 
     GET /listings?seller=abc&sort=abc
-    GET /healtz
+    GET /healthz
     
